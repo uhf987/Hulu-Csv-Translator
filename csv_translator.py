@@ -68,26 +68,34 @@ def build_prompt(text, src_name, src_code, tgt_name, tgt_code):
 
 
 def extract_protected_segments(text):
-    """Replace all protected segments with placeholders."""
-    pattern = build_combined_pattern()
+    """Replace all protected segments with placeholders.
+
+    Literal escape sequences (\\r\\n, \\n, \\r, \\t) used as game engine
+    tokens are ALWAYS protected first, before any user-configured patterns.
+    This ensures the model never sees, reorders, or drops them.
+    """
     placeholders = {}
     counter = [0]
 
-    if not pattern:
-        return text, placeholders
-
-    def replace(match):
+    def make_placeholder(value):
         key = "__PROTECTED_" + str(counter[0]) + "__"
-        placeholders[key] = match.group(0)
+        placeholders[key] = value
         counter[0] += 1
         return key
 
-    try:
-        cleaned = re.sub(pattern, replace, text)
-    except re.error:
-        cleaned = text
+    # Step 1: Always protect literal escape sequences (\\r\\n before \\n).
+    ESCAPE_RE = re.compile(r'\\r\\n|\\n|\\r|\\t')
+    text = ESCAPE_RE.sub(lambda m: make_placeholder(m.group(0)), text)
 
-    return cleaned, placeholders
+    # Step 2: Apply user-configured protect patterns (Pipe, Curly, etc.)
+    pattern = build_combined_pattern()
+    if pattern:
+        try:
+            text = re.sub(pattern, lambda m: make_placeholder(m.group(0)), text)
+        except re.error:
+            pass
+
+    return text, placeholders
 
 
 def restore_protected_segments(text, placeholders):
