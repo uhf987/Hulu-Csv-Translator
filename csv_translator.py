@@ -48,6 +48,12 @@ def build_combined_pattern():
 
 def build_prompt(text, src_name, src_code, tgt_name, tgt_code):
     """Official TranslateGemma prompt format."""
+    has_placeholders = "__PROTECTED_" in text
+    placeholder_instruction = (
+        "The text contains placeholders in the format __PROTECTED_N__ (where N is a number). "
+        "These are protected tokens that must be copied into the translation exactly as they appear, "
+        "without any modification, translation, or replacement. "
+    ) if has_placeholders else ""
     return (
         "You are a professional " + src_name + " (" + src_code + ") to "
         + tgt_name + " (" + tgt_code + ") translator. "
@@ -55,7 +61,8 @@ def build_prompt(text, src_name, src_code, tgt_name, tgt_code):
         + src_name + " text while adhering to " + tgt_name + " grammar, vocabulary, "
         "and cultural sensitivities. Produce only the " + tgt_name + " translation, "
         "without any additional explanations or commentary. "
-        "Please translate the following " + src_name + " text into " + tgt_name + ":\n\n\n"
+        + placeholder_instruction
+        + "Please translate the following " + src_name + " text into " + tgt_name + ":\n\n\n"
         + text
     )
 
@@ -100,8 +107,10 @@ def translate_cell(text, src_name="English", src_code="en", tgt_name="Turkish", 
 
     cleaned, placeholders = extract_protected_segments(text)
 
-    if not cleaned.strip() or re.fullmatch(r"[\s_]*", cleaned):
-        return restore_protected_segments(cleaned, placeholders)
+    # Tüm içerik korumalı segmentlere ait ise çevrilecek metin yok, orijinali döndür
+    translatable = re.sub(r"__PROTECTED_\d+__", "", cleaned).strip()
+    if not cleaned.strip() or re.fullmatch(r"[\s_]*", cleaned) or not translatable:
+        return text
 
     prompt = build_prompt(cleaned, src_name, src_code, tgt_name, tgt_code)
 
