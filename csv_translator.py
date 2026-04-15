@@ -110,6 +110,51 @@ def restore_protected_segments(text, placeholders):
     return text
 
 
+def validate_and_fix(original, translated, placeholders):
+    """
+    Ceviri sonrasini dogrular ve duzeltir:
+    1. Ceviride kalan __PROTECTED_X__ leakleri restore eder veya siler.
+    2. Orijinalde olan ama ceviride eksik pipe/HTML taglari sona eklenir.
+    3. Escape token sayisi tutmuyorsa None doner (caller orijinali kullanir).
+    """
+    PIPE_RE     = re.compile(r'\|[^|]*\|')
+    HTML_TAG_RE = re.compile(r'</?[a-zA-Z][^>]*?/?>')
+    ESCAPE_RE   = re.compile(r'\\r\\n|\\n|\\r|\\t')
+
+    # 1. Leak: ceviride hala __PROTECTED_X__ varsa restore et veya sil
+    for key in re.findall(r'__PROTECTED_\d+__', translated):
+        if key in placeholders:
+            translated = translated.replace(key, placeholders[key])
+        else:
+            translated = translated.replace(key, '')
+
+    # 2. Pipe token kontrolu
+    orig_pipes    = PIPE_RE.findall(original)
+    tr_pipes      = PIPE_RE.findall(translated)
+    missing_pipes = [p for p in orig_pipes if p not in tr_pipes]
+    if missing_pipes:
+        if len(missing_pipes) > max(1, len(orig_pipes) / 2):
+            return None
+        translated = translated.rstrip() + ' ' + ' '.join(missing_pipes)
+
+    # 3. HTML tag kontrolu
+    orig_tags    = HTML_TAG_RE.findall(original)
+    tr_tags      = HTML_TAG_RE.findall(translated)
+    missing_tags = [t for t in orig_tags if t not in tr_tags]
+    if missing_tags:
+        if len(missing_tags) > max(1, len(orig_tags) / 2):
+            return None
+        translated = translated.rstrip() + ''.join(missing_tags)
+
+    # 4. Escape token sayisi eslesme kontrolu
+    orig_esc = ESCAPE_RE.findall(original)
+    tr_esc   = ESCAPE_RE.findall(translated)
+    if len(orig_esc) != len(tr_esc):
+        return None
+
+    return translated.strip()
+
+
 def translate_cell(text, src_name="English", src_code="en", tgt_name="Turkish", tgt_code="tr", verbose=False):
     global _stop_flag
     if _stop_flag:
@@ -121,7 +166,7 @@ def translate_cell(text, src_name="English", src_code="en", tgt_name="Turkish", 
 
     cleaned, placeholders = extract_protected_segments(text)
 
-    # Tüm içerik korumalı segmentlere ait ise çevrilecek metin yok, orijinali döndür
+    # Tum icerik korumali segmentlere ait ise cevrilecek metin yok, orijinali dondur
     translatable = re.sub(r"__PROTECTED_\d+__", "", cleaned).strip()
     if not cleaned.strip() or re.fullmatch(r"[\s_]*", cleaned) or not translatable:
         return text
@@ -167,7 +212,18 @@ def translate_cell(text, src_name="English", src_code="en", tgt_name="Turkish", 
         print("  " + src_name + ": " + cleaned[:60])
         print("  " + tgt_name + ": " + translated[:60])
 
-    return restore_protected_segments(translated, placeholders)
+    # Restore et
+    restored = restore_protected_segments(translated, placeholders)
+
+    # Dogrula ve duzelt
+    fixed = validate_and_fix(text, restored, placeholders)
+    if fixed is None:
+        if verbose:
+            print("  [VALIDATION FAILED] Yeniden ceviri gerekiyor: " + text[:60])
+        return "[RETRANSLATE: " + text + "]"
+
+    return fixed
+
 
 
 # Supported languages: Display name -> (English name for prompt, ISO code)
