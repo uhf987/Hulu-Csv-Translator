@@ -70,9 +70,11 @@ def build_prompt(text, src_name, src_code, tgt_name, tgt_code):
 def extract_protected_segments(text):
     """Replace all protected segments with placeholders.
 
-    Literal escape sequences (\\r\\n, \\n, \\r, \\t) used as game engine
-    tokens are ALWAYS protected first, before any user-configured patterns.
-    This ensures the model never sees, reorders, or drops them.
+    Always-protected (regardless of user settings):
+      - Literal escape sequences: \\r\\n, \\n, \\r, \\t  (game engine tokens)
+      - HTML/markup tags: <i>, </i>, <s>, </s>, <b>, <br/>, etc.
+
+    Then user-configured patterns (Pipe, Curly, etc.) are applied on top.
     """
     placeholders = {}
     counter = [0]
@@ -87,7 +89,11 @@ def extract_protected_segments(text):
     ESCAPE_RE = re.compile(r'\\r\\n|\\n|\\r|\\t')
     text = ESCAPE_RE.sub(lambda m: make_placeholder(m.group(0)), text)
 
-    # Step 2: Apply user-configured protect patterns (Pipe, Curly, etc.)
+    # Step 2: Always protect HTML/markup tags like <i>, </b>, <br/>, etc.
+    HTML_TAG_RE = re.compile(r'</?[a-zA-Z][^>]*?/?>')
+    text = HTML_TAG_RE.sub(lambda m: make_placeholder(m.group(0)), text)
+
+    # Step 3: Apply user-configured protect patterns (Pipe, Curly, etc.)
     pattern = build_combined_pattern()
     if pattern:
         try:
@@ -122,23 +128,40 @@ def translate_cell(text, src_name="English", src_code="en", tgt_name="Turkish", 
 
     prompt = build_prompt(cleaned, src_name, src_code, tgt_name, tgt_code)
 
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "top_k": 64, "top_p": 0.95},
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        translated = response.json().get("response", "").strip()
-    except requests.exceptions.ConnectionError:
-        return "[ERROR: Could not connect to Ollama]"
-    except Exception as e:
-        return "[ERROR: " + str(e) + "]"
+    MAX_RETRIES = 3
+    TIMEOUT_SECONDS = 180
+    translated = None
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.1, "top_k": 64, "top_p": 0.95},
+                },
+                timeout=TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            translated = response.json().get("response", "").strip()
+            last_error = None
+            break
+        except requests.exceptions.ConnectionError:
+            return "[ERROR: Could not connect to Ollama]"
+        except requests.exceptions.Timeout:
+            last_error = "Timeout after " + str(TIMEOUT_SECONDS) + "s (attempt " + str(attempt) + "/" + str(MAX_RETRIES) + ")"
+            if verbose:
+                print("  [RETRY] " + last_error)
+            time.sleep(5)
+        except Exception as e:
+            last_error = str(e)
+            break
+
+    if last_error:
+        return "[ERROR: " + last_error + "]"
 
     if verbose:
         print("  " + src_name + ": " + cleaned[:60])
